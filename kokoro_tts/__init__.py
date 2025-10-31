@@ -1156,74 +1156,93 @@ def merge_chunks_to_chapters(split_output_dir, format="wav"):
 
         print(f"\nMerging chunks for {chapter_title}")
         
-        # Initialize variables for merging
-        all_samples = []
+        # Initialize bookkeeping / stats
+        # This change was with the help of AI to fix the "Unable to allocate 4.02 GiB for an array with shape (539465856,) and data type float64" and other simmilar errors when merging files when output is large
         sample_rate = None
-        total_duration = 0
-        
-        # Create progress spinner
+        total_duration = 0.0
         total_chunks = len(chunk_files)
         processed_chunks = 0
-        
-        for chunk_file in chunk_files:
+
+        # We'll open the output file once and append chunk by chunk
+        out_file_handle = None
+
+        for idx, chunk_file in enumerate(chunk_files, start=1):
             chunk_path = os.path.join(chapter_path, chunk_file)
-            
-            # Display progress
-            print(f"\rProcessing chunk {processed_chunks + 1}/{total_chunks}", end="")
-            
+
+            # Progress line
+            print(f"\rProcessing chunk {idx}/{total_chunks}", end="")
+
             try:
-                # Read audio data
-                data, sr = sf.read(chunk_path)
-                
-                # Verify the audio data
+                data, sr = sf.read(chunk_path, dtype='float32')
+
                 if len(data) == 0:
                     print(f"\nWarning: Empty audio data in {chunk_file}")
                     continue
-                
-                # Initialize sample rate or verify it matches
+
+                # Initialize sample_rate and output file on first valid chunk
                 if sample_rate is None:
                     sample_rate = sr
+
+                    # Open the merged file for streaming write.
+                    # We assume mono or whatever the first chunk is.
+                    # We detect number of channels from data shape.
+                    if data.ndim == 1:
+                        channels = 1
+                    else:
+                        channels = data.shape[1]
+
+                    out_file_handle = sf.SoundFile(
+                        merged_file,
+                        mode='w',
+                        samplerate=sample_rate,
+                        channels=channels,
+                        subtype='PCM_16'
+                    )
+
+                # Sanity check: chunk must match the first chunk’s rate/channels
                 elif sr != sample_rate:
                     print(f"\nWarning: Sample rate mismatch in {chunk_file}")
                     continue
-                
-                # Add chunk duration to total
-                chunk_duration = len(data) / sr
+                else:
+                    # also confirm channel count matches
+                    if data.ndim == 1 and out_file_handle.channels != 1:
+                        print(f"\nWarning: Channel mismatch in {chunk_file}")
+                        continue
+                    if data.ndim == 2 and data.shape[1] != out_file_handle.channels:
+                        print(f"\nWarning: Channel mismatch in {chunk_file}")
+                        continue
+
+                # Write this chunk's samples straight to disk
+                out_file_handle.write(data)
+
+                # Update stats
+                chunk_duration = len(data) / sample_rate
                 total_duration += chunk_duration
-                
-                # Append the audio data
-                all_samples.extend(data)
                 processed_chunks += 1
-                
+
             except Exception as e:
                 print(f"\nError processing {chunk_file}: {e}")
-        
-        print()  # New line after progress
-        
-        if all_samples:
-            print(f"Saving merged chapter to {merged_file}")
+
+        # Finish progress line with newline
+        print()
+
+        # Clean up and report
+        if out_file_handle is not None:
+            out_file_handle.close()
+
+            print(f"Saved merged chapter to {merged_file}")
             print(f"Total duration: {total_duration:.2f} seconds")
-            
+            print(f"Successfully merged {processed_chunks}/{total_chunks} chunks")
+
+            # Optional: verify final file duration
             try:
-                # Ensure all_samples is a numpy array
-                all_samples = np.array(all_samples)
-                
-                # Save merged audio
-                sf.write(merged_file, all_samples, sample_rate)
-                print(f"Successfully merged {processed_chunks}/{total_chunks} chunks")
-                
-                # Verify the output file
-                if os.path.exists(merged_file):
-                    output_data, output_sr = sf.read(merged_file)
-                    output_duration = len(output_data) / output_sr
-                    print(f"Verified output file: {output_duration:.2f} seconds")
-                else:
-                    print("Warning: Output file was not created")
-                
+                output_data, output_sr = sf.read(merged_file)
+                output_duration = len(output_data) / output_sr
+                print(f"Verified output file: {output_duration:.2f} seconds")
             except Exception as e:
-                print(f"Error saving merged file: {e}")
+                print(f"Warning: could not verify merged file: {e}")
         else:
-            print("No valid audio data to merge")
+            print("No valid audio data to merge (nothing written)")
 
 def get_valid_options():
     """Return a set of valid command line options"""
